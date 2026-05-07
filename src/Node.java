@@ -12,6 +12,8 @@
 // These descriptions are intended to help you understand how the interface
 // will be used. See the RFC for how the protocol works.
 
+import java.net.DatagramSocket;
+
 interface NodeInterface {
 
     /* These methods configure your node.
@@ -81,13 +83,74 @@ interface NodeInterface {
 
 // Complete this!
 public class Node implements NodeInterface {
+    private String nodeName;
+    private byte[] nodeHashID;
+    private DatagramSocket socket;
 
+    //Sets node's name ensuring it starts with "N:" and computes its hashID
     public void setNodeName(String nodeName) throws Exception {
-	throw new Exception("Not implemented");
+
+        if (!nodeName.startsWith("N:")){
+            throw new Exception("Node name must start with N:");
+        }else {
+            this.nodeName = nodeName;
+            this.nodeHashID = HashID.computeHashID(nodeName);
+        }
     }
 
-    public void openPort(int portNumber) throws Exception {
-	throw new Exception("Not implemented");
+    public void openPort(int portNumber) throws Exception{
+        this.socket = new DatagramSocket(portNumber);
+    }
+
+    public static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b: bytes) {
+            sb.append(String.format("%02x", b & 0xFF));
+        }
+        return sb.toString();
+    }
+
+    public static int calculateDistance(byte[] a, byte[] b){
+        int count = 0;
+        for(int i = 0; i < a.length; i++) {
+            int xor = (a[i] ^ b[i]) & 0xFF;
+
+            if (xor == 0) {
+                count += 8;
+            }
+            else{
+                for (int bit = 7; bit >= 0; bit--) {
+                    if (((xor >> bit) & 1) == 0) {
+                        count++;
+                    } else {
+                        return 256 - count;
+                    }
+                }
+            }
+        }
+        return 256 - count;
+    }
+
+    public static String encodeString(String message){
+        int spaceCount = 0;
+        for (int i = 0; i < message.length(); i++) {
+            if (message.charAt(i) == ' ') {
+                spaceCount++;
+            }
+        }
+        return spaceCount + " " + message + " ";
+    }
+
+    
+
+    public static void main(String[] args) throws Exception {
+        System.out.println(bytesToHex(HashID.computeHashID("hello")));
+        byte[] h1 = HashID.computeHashID("N:test0");
+        byte[] h2 = HashID.computeHashID("N:test1");
+        System.out.println(calculateDistance(h1, h1));  // 0
+        System.out.println(calculateDistance(h1, h2));
+        System.out.println(encodeString("Hello World"));  // "1 Hello World "
+        System.out.println(encodeString("Hello"));    // some number
     }
 
     public void handleIncomingMessages(int delay) throws Exception {
