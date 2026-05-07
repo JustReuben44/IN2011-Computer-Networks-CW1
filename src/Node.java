@@ -13,6 +13,10 @@
 // will be used. See the RFC for how the protocol works.
 
 import java.net.DatagramSocket;
+import java.net.DatagramPacket;
+import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
+
 
 interface NodeInterface {
 
@@ -103,9 +107,9 @@ public class Node implements NodeInterface {
     }
 
     public static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder hash = new StringBuilder();
         for (byte b: bytes) {
-            sb.append(String.format("%02x", b & 0xFF));
+            hash.append(String.format("%02x", b & 0xFF));
         }
         return sb.toString();
     }
@@ -141,20 +145,77 @@ public class Node implements NodeInterface {
         return spaceCount + " " + message + " ";
     }
 
-    
+    private static DecodeResult decodeString(String message, int startPos) throws Exception {
+        int firstSpace = message.indexOf(' ', startPos);
+        int count = Integer.parseInt(message.substring(startPos, firstSpace));
+        int valueStart = firstSpace + 1;
+
+        int pos = valueStart;
+        int spacesSeen = 0;
+
+        while (pos < message.length()) {
+            if (message.charAt(pos) == ' ') {
+                if (spacesSeen == count) break;  // this is the terminator
+                spacesSeen++;
+            }
+            pos++;
+        }
+
+        String value = message.substring(valueStart, pos);
+        return new DecodeResult(value, pos + 1);
+    }
 
     public static void main(String[] args) throws Exception {
-        System.out.println(bytesToHex(HashID.computeHashID("hello")));
-        byte[] h1 = HashID.computeHashID("N:test0");
-        byte[] h2 = HashID.computeHashID("N:test1");
-        System.out.println(calculateDistance(h1, h1));  // 0
-        System.out.println(calculateDistance(h1, h2));
-        System.out.println(encodeString("Hello World"));  // "1 Hello World "
-        System.out.println(encodeString("Hello"));    // some number
+        Node n = new Node();
+        n.setNodeName("N:test0");
+        n.openPort(20110);
+        System.out.println("Listening on 20110...");
+        n.handleIncomingMessages(0);
     }
 
     public void handleIncomingMessages(int delay) throws Exception {
-	throw new Exception("Not implemented");
+        socket.setSoTimeout(delay == 0 ? 0 : delay);
+        long start = System.currentTimeMillis();
+
+        while (true) {
+            byte[] buffer = new byte[65536];
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            try {
+                socket.receive(packet);
+                System.out.println("Got packet from " + packet.getAddress() + ":"
+                        + packet.getPort() + " length=" + packet.getLength());
+
+                byte[] data = packet.getData();
+                int len = packet.getLength();
+
+
+                byte txId0 = data[0];
+                byte txId1 = data[1];
+
+
+                String body = new String(data, 3, len - 3, java.nio.charset.StandardCharsets.UTF_8);
+
+                if (body.startsWith("G")) {
+                    String reply = "H " + encodeString(nodeName);
+                    byte[] replyBytes = reply.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+
+                    byte[] full = new byte[2 + 1 + replyBytes.length];
+                    full[0] = txId0;
+                    full[1] = txId1;
+                    full[2] = ' ';
+                    System.arraycopy(replyBytes, 0, full, 3, replyBytes.length);
+
+                    DatagramPacket out = new DatagramPacket(full, full.length,
+                            packet.getAddress(), packet.getPort());
+                    socket.send(out);
+                }
+            } catch (SocketTimeoutException e) {
+                return;
+            }
+
+            if (delay > 0 && System.currentTimeMillis() - start >= delay) return;
+        }
     }
     
     public boolean isActive(String nodeName) throws Exception {

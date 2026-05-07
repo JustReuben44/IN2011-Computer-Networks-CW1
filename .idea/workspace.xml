@@ -5,7 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="3b207750-caab-4f0e-931f-e475cf96af72" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/src/HashID.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/HashID.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/DecodeResult.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/Node.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/Node.java" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -50,7 +51,7 @@
     "git-widget-placeholder": "main",
     "ignore.virus.scanning.warn.message": "true",
     "kotlin-language-version-configured": "true",
-    "last_opened_file_path": "C:/Users/Reuben/IdeaProjects/IN2011-Computer-Networks-CW1",
+    "last_opened_file_path": "C:/Users/Reuben/IdeaProjects/IN2011-Computer-Networks-CW1/src",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -62,6 +63,11 @@
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\Reuben\IdeaProjects\IN2011-Computer-Networks-CW1\src" />
+    </key>
+  </component>
   <component name="RunManager">
     <configuration default="true" type="JetRunConfigurationType">
       <module name="IN2011-Computer-Networks-CW1" />
@@ -84,7 +90,7 @@
       <updated>1778062056554</updated>
       <workItem from="1778062067065" duration="1271000" />
       <workItem from="1778082414175" duration="7403000" />
-      <workItem from="1778149804622" duration="13229000" />
+      <workItem from="1778149804622" duration="18331000" />
     </task>
     <servers />
   </component>
