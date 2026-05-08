@@ -19,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.List;
+import java.util.ArrayList;
 
 
 interface NodeInterface {
@@ -96,6 +98,7 @@ public class Node implements NodeInterface {
     private Map<String, String> addressPairs = new HashMap<>();
     private Map<Integer, String> responses = new HashMap<>();
     private Random random = new Random();
+    private Map<String, String> dataPairs = new HashMap<>();
 
     //Sets node's name ensuring it starts with "N:" and computes its hashID
     public void setNodeName(String nodeName) throws Exception {
@@ -118,6 +121,16 @@ public class Node implements NodeInterface {
             hash.append(String.format("%02x", b & 0xFF));
         }
         return hash.toString();
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        byte[] out = new byte[32];
+        for (int i = 0; i < 32; i++) {
+            int hi = Character.digit(hex.charAt(i*2), 16);
+            int lo = Character.digit(hex.charAt(i*2+1), 16);
+            out[i] = (byte)((hi << 4) | lo);
+        }
+        return out;
     }
 
     public static int calculateDistance(byte[] a, byte[] b){
@@ -179,17 +192,18 @@ public class Node implements NodeInterface {
         Node n2 = new Node();
         n2.setNodeName("N:test1");
         n2.openPort(20111);
-
+        n2.dataPairs.put("D:hello", "world");
 
         n1.addressPairs.put("N:test1", "127.0.0.1:20111");
-
 
         Thread t = new Thread(() -> {
             try { n2.handleIncomingMessages(0); } catch (Exception e) {}
         });
         t.setDaemon(true);
         t.start();
-        System.out.println("isActive: " + n1.isActive("N:test1"));
+
+        System.out.println("exists D:hello: " + n1.exists("D:hello"));
+        System.out.println("exists D:missing: " + n1.exists("D:missing"));
     }
 
     public void handleIncomingMessages(int delay) throws Exception {
@@ -207,27 +221,13 @@ public class Node implements NodeInterface {
                 byte[] data = packet.getData();
                 int len = packet.getLength();
 
-
                 byte txId0 = data[0];
                 byte txId1 = data[1];
-
 
                 String body = new String(data, 3, len - 3, java.nio.charset.StandardCharsets.UTF_8);
 
                 if (body.startsWith("G")) {
-                    String reply = "H " + encodeString(nodeName);
-                    byte[] replyBytes = reply.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-
-
-                    byte[] full = new byte[2 + 1 + replyBytes.length];
-                    full[0] = txId0;
-                    full[1] = txId1;
-                    full[2] = ' ';
-                    System.arraycopy(replyBytes, 0, full, 3, replyBytes.length);
-
-                    DatagramPacket out = new DatagramPacket(full, full.length,
-                            packet.getAddress(), packet.getPort());
-                    socket.send(out);
+                    sendReply(packet, txId0, txId1, "H " + encodeString(nodeName));
                 }
 
                 else if (body.startsWith("H")) {
@@ -235,12 +235,110 @@ public class Node implements NodeInterface {
                     responses.put(rxTxID, body);
                 }
 
-                
+                else if (body.startsWith("O")) {
+                    int rxTxID = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
+                    responses.put(rxTxID, body);
+                }
+
+                else if (body.startsWith("N ")) {
+                    String hexHash = body.substring(2, 66);  // 64 hex chars after "N "
+                    byte[] targetHash = hexToBytes(hexHash);
+
+                    List<String> sorted = new ArrayList<>(addressPairs.keySet());
+                    sorted.sort((a, b) -> {
+                        try {
+                            int da = calculateDistance(HashID.computeHashID(a), targetHash);
+                            int db = calculateDistance(HashID.computeHashID(b), targetHash);
+                            return Integer.compare(da, db);
+                        } catch (Exception e) { return 0; }
+                    });
+
+                    StringBuilder reply = new StringBuilder("O ");
+                    for (int i = 0; i < Math.min(3, sorted.size()); i++) {
+                        String name = sorted.get(i);
+                        reply.append(encodeString(name));
+                        reply.append(encodeString(addressPairs.get(name)));
+                    }
+
+                    sendReply(packet, txId0, txId1, reply.toString());
+                }
+
+                else if (body.startsWith("E ")) {
+                    DecodeResult key = decodeString(body.substring(2), 0);
+                    boolean haveIt = dataPairs.containsKey(key.value) || addressPairs.containsKey(key.value);
+                    String reply;
+                    if (haveIt) {
+                        reply = "F Y";
+                    } else {
+                        byte[] keyHash = HashID.computeHashID(key.value);
+                        reply = amIClosest(keyHash) ? "F N" : "F ?";
+                    }
+                    sendReply(packet, txId0, txId1, reply);
+                }
+
+                else if (body.startsWith("F")) {
+                    int rxTxID = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
+                    responses.put(rxTxID, body);
+                }
+
             } catch (SocketTimeoutException e) {
                 return;
             }
 
             if (delay > 0 && System.currentTimeMillis() - start >= delay) return;
+        }
+    }
+
+    private void sendReply(DatagramPacket original, byte t0, byte t1, String body) throws Exception {
+        byte[] bodyBytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] full = new byte[3 + bodyBytes.length];
+        full[0] = t0;
+        full[1] = t1;
+        full[2] = ' ';
+        System.arraycopy(bodyBytes, 0, full, 3, bodyBytes.length);
+        DatagramPacket out = new DatagramPacket(full, full.length,
+                original.getAddress(), original.getPort());
+        socket.send(out);
+    }
+
+    private void parseNearestResponse(String content) throws Exception {
+        int pos = 0;
+        while (pos < content.length()) {
+            DecodeResult name = decodeString(content, pos);
+            pos = name.endPos;
+            if (pos >= content.length()) break;
+            DecodeResult addr = decodeString(content, pos);
+            pos = addr.endPos;
+            if (name.value.startsWith("N:")) {
+                addressPairs.put(name.value, addr.value);
+            }
+        }
+    }
+
+    private void sendNearest(byte[] targetHash, String addr, int port) throws Exception {
+        int txID = generateTransactionID();
+        byte[] txBytes = { (byte)(txID >> 8), (byte)(txID & 0xFF) };
+
+        String body = "N " + bytesToHex(targetHash);
+        byte[] bodyBytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] full = new byte[3 + bodyBytes.length];
+        full[0] = txBytes[0];
+        full[1] = txBytes[1];
+        full[2] = ' ';
+        System.arraycopy(bodyBytes, 0, full, 3, bodyBytes.length);
+
+        DatagramPacket out = new DatagramPacket(full, full.length,
+                java.net.InetAddress.getByName(addr), port);
+        socket.send(out);
+
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline) {
+            handleIncomingMessages(500);
+            if (responses.containsKey(txID)) {
+                String reply = responses.remove(txID);
+                if (reply.startsWith("O ")) parseNearestResponse(reply.substring(2));
+                return;
+            }
         }
     }
 
@@ -250,6 +348,20 @@ public class Node implements NodeInterface {
             id = random.nextInt(65536);
         } while ((id & 0xFF) == 0x20 || ((id >> 8) & 0xFF) == 0x20);
         return id;
+    }
+
+    private boolean amIClosest(byte[] keyHash) throws Exception {
+        List<String> all = new ArrayList<>(addressPairs.keySet());
+        all.add(nodeName);  // include self
+        all.sort((a, b) -> {
+            try {
+                int da = calculateDistance(HashID.computeHashID(a), keyHash);
+                int db = calculateDistance(HashID.computeHashID(b), keyHash);
+                return Integer.compare(da, db);
+            } catch (Exception e) { return 0; }
+        });
+        int idx = all.indexOf(nodeName);
+        return idx >= 0 && idx < 3;
     }
     
     public boolean isActive(String nodeName) throws Exception {
@@ -295,7 +407,43 @@ public class Node implements NodeInterface {
     }
 
     public boolean exists(String key) throws Exception {
-	throw new Exception("Not implemented");
+        byte[] keyHash = HashID.computeHashID(key);
+
+        List<String> sorted = new ArrayList<>(addressPairs.keySet());
+        sorted.sort((a, b) -> {
+            try {
+                int da = calculateDistance(HashID.computeHashID(a), keyHash);
+                int db = calculateDistance(HashID.computeHashID(b), keyHash);
+                return Integer.compare(da, db);
+            } catch (Exception e) { return 0; }
+        });
+
+        for (int i = 0; i < Math.min(3, sorted.size()); i++) {
+            String node = sorted.get(i);
+            String addrPort = addressPairs.get(node);
+            String[] parts = addrPort.split(":");
+
+            int txID = generateTransactionID();
+            byte[] txBytes = { (byte)(txID >> 8), (byte)(txID & 0xFF) };
+            String reqBody = "E " + encodeString(key);
+            byte[] bodyBytes = reqBody.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] full = new byte[3 + bodyBytes.length];
+            full[0] = txBytes[0]; full[1] = txBytes[1]; full[2] = ' ';
+            System.arraycopy(bodyBytes, 0, full, 3, bodyBytes.length);
+            socket.send(new DatagramPacket(full, full.length,
+                    java.net.InetAddress.getByName(parts[0]), Integer.parseInt(parts[1])));
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline) {
+                handleIncomingMessages(500);
+                if (responses.containsKey(txID)) {
+                    String reply = responses.remove(txID);
+                    if (reply.startsWith("F Y")) return true;
+                    break;
+                }
+            }
+        }
+        return false;
     }
     
     public String read(String key) throws Exception {
