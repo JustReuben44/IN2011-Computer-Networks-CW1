@@ -1,10 +1,10 @@
 // IN2011 Computer Networks
 // Coursework 2024/2025
 //
-// Submission by
-//  YOUR_NAME_GOES_HERE
-//  YOUR_STUDENT_ID_NUMBER_GOES_HERE
-//  YOUR_EMAIL_GOES_HERE
+// Submission by:  5 pm 8/05/2026
+//  Reuben Waysome
+//  240013182
+//  reuben.waysome@city.ac.uk
 
 
 // DO NOT EDIT starts
@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.List;
 import java.util.ArrayList;
-
+import java.util.Stack;
 
 interface NodeInterface {
 
@@ -99,6 +99,7 @@ public class Node implements NodeInterface {
     private Map<Integer, String> responses = new HashMap<>();
     private Random random = new Random();
     private Map<String, String> dataPairs = new HashMap<>();
+    private Stack<String> relayStack = new Stack<>();
 
     //Sets node's name ensuring it starts with "N:" and computes its hashID
     public void setNodeName(String nodeName) throws Exception {
@@ -115,6 +116,7 @@ public class Node implements NodeInterface {
         this.socket = new DatagramSocket(portNumber);
     }
 
+    // Converts hashID to hex
     public static String bytesToHex(byte[] bytes) {
         StringBuilder hash = new StringBuilder();
         for (byte b: bytes) {
@@ -123,6 +125,7 @@ public class Node implements NodeInterface {
         return hash.toString();
     }
 
+    // Parses hex characters into bytes
     private static byte[] hexToBytes(String hex) {
         byte[] out = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -133,6 +136,7 @@ public class Node implements NodeInterface {
         return out;
     }
 
+    // Computes the distance between two hashIDs using 256 - matching leading bits (xor)
     public static int calculateDistance(byte[] a, byte[] b){
         int count = 0;
         for(int i = 0; i < a.length; i++) {
@@ -154,6 +158,7 @@ public class Node implements NodeInterface {
         return 256 - count;
     }
 
+    // Encodes a Java string into the CRN wire format
     public static String encodeString(String message){
         int spaceCount = 0;
         for (int i = 0; i < message.length(); i++) {
@@ -164,6 +169,7 @@ public class Node implements NodeInterface {
         return spaceCount + " " + message + " ";
     }
 
+    // Decodes a CRN-formatted string from a message starting from startPos
     private static DecodeResult decodeString(String message, int startPos) throws Exception {
         int firstSpace = message.indexOf(' ', startPos);
         int count = Integer.parseInt(message.substring(startPos, firstSpace));
@@ -174,7 +180,7 @@ public class Node implements NodeInterface {
 
         while (pos < message.length()) {
             if (message.charAt(pos) == ' ') {
-                if (spacesSeen == count) break;  // this is the terminator
+                if (spacesSeen == count) break;
                 spacesSeen++;
             }
             pos++;
@@ -184,28 +190,8 @@ public class Node implements NodeInterface {
         return new DecodeResult(value, pos + 1);
     }
 
-    public static void main(String[] args) throws Exception {
-        Node n1 = new Node();
-        n1.setNodeName("N:test0");
-        n1.openPort(20110);
-
-        Node n2 = new Node();
-        n2.setNodeName("N:test1");
-        n2.openPort(20111);
-
-        n1.addressPairs.put("N:test1", "127.0.0.1:20111");
-
-        Thread t = new Thread(() -> {
-            try { n2.handleIncomingMessages(0); } catch (Exception e) {}
-        });
-        t.setDaemon(true);
-        t.start();
-
-        System.out.println("write: " + n1.write("D:hello", "world"));
-        System.out.println("read: " + n1.read("D:hello"));
-        System.out.println("read missing: " + n1.read("D:nope"));
-    }
-
+    // Listens for UDP packets on open socket and routes them accordingly
+    // Returns after delay
     public void handleIncomingMessages(int delay) throws Exception {
         socket.setSoTimeout(delay == 0 ? 0 : delay);
         long start = System.currentTimeMillis();
@@ -215,8 +201,6 @@ public class Node implements NodeInterface {
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
             try {
                 socket.receive(packet);
-                System.out.println("Got packet from " + packet.getAddress() + ":"
-                        + packet.getPort() + " length=" + packet.getLength());
 
                 byte[] data = packet.getData();
                 int len = packet.getLength();
@@ -271,7 +255,7 @@ public class Node implements NodeInterface {
                         reply = "F Y";
                     } else {
                         byte[] keyHash = HashID.computeHashID(key.value);
-                        reply = amIClosest(keyHash) ? "F N" : "F ?";
+                        reply = isClosest(keyHash) ? "F N" : "F ?";
                     }
                     sendReply(packet, txId0, txId1, reply);
                 }
@@ -290,7 +274,7 @@ public class Node implements NodeInterface {
                         reply = "S Y " + encodeString(addressPairs.get(key.value));
                     } else {
                         byte[] keyHash = HashID.computeHashID(key.value);
-                        reply = amIClosest(keyHash) ? "S N" : "S ?";
+                        reply = isClosest(keyHash) ? "S N" : "S ?";
                     }
                     sendReply(packet, txId0, txId1, reply);
                 }
@@ -301,8 +285,6 @@ public class Node implements NodeInterface {
                 }
 
                 else if (body.startsWith("W ")) {
-                    System.out.println("write called, knownPeers=" + addressPairs.keySet());
-                    String afterW = body.substring(2);
                     DecodeResult key = decodeString(body.substring(2), 0);
                     DecodeResult val = decodeString(body, 2 + key.endPos);
 
@@ -318,7 +300,7 @@ public class Node implements NodeInterface {
                         reply = "R";
                     } else {
                         byte[] keyHash = HashID.computeHashID(key.value);
-                        if (amIClosest(keyHash)) {
+                        if (isClosest(keyHash)) {
                             if (isAddress) addressPairs.put(key.value, val.value);
                             else dataPairs.put(key.value, val.value);
                             reply = "A";
@@ -326,7 +308,6 @@ public class Node implements NodeInterface {
                             reply = "X";
                         }
                     }
-                    System.out.println("W received: key=" + key.value + " val=" + val.value);
                     sendReply(packet, txId0, txId1, reply);
                 }
                 else if (body.equals("R") || body.equals("A") || body.equals("X")) {
@@ -343,6 +324,7 @@ public class Node implements NodeInterface {
         }
     }
 
+    // Build and sends UDP response using transactionID of incoming request
     private void sendReply(DatagramPacket original, byte t0, byte t1, String body) throws Exception {
         byte[] bodyBytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         byte[] full = new byte[3 + bodyBytes.length];
@@ -355,6 +337,7 @@ public class Node implements NodeInterface {
         socket.send(out);
     }
 
+    // Extracts address key/value pairs from an O response and stores them into addressPairs
     private void parseNearestResponse(String content) throws Exception {
         int pos = 0;
         while (pos < content.length()) {
@@ -369,6 +352,7 @@ public class Node implements NodeInterface {
         }
     }
 
+    // Sends a Nearest (N) request
     private void sendNearest(byte[] targetHash, String addr, int port) throws Exception {
         int txID = generateTransactionID();
         byte[] txBytes = { (byte)(txID >> 8), (byte)(txID & 0xFF) };
@@ -396,6 +380,7 @@ public class Node implements NodeInterface {
         }
     }
 
+    // Generates transactionID ensuring the bytes created aren't spaces
     private int generateTransactionID() {
         int id;
         do {
@@ -404,9 +389,10 @@ public class Node implements NodeInterface {
         return id;
     }
 
-    private boolean amIClosest(byte[] keyHash) throws Exception {
+    // Returns true if this node is one of three closest known nodes to the hash provided
+    private boolean isClosest(byte[] keyHash) throws Exception {
         List<String> all = new ArrayList<>(addressPairs.keySet());
-        all.add(nodeName);  // include self
+        all.add(nodeName);
         all.sort((a, b) -> {
             try {
                 int da = calculateDistance(HashID.computeHashID(a), keyHash);
@@ -417,7 +403,8 @@ public class Node implements NodeInterface {
         int idx = all.indexOf(nodeName);
         return idx >= 0 && idx < 3;
     }
-    
+
+    // Sends a Name request (G) to a known node and verifies it replies with the correct H response
     public boolean isActive(String nodeName) throws Exception {
         String addrPort = addressPairs.get(nodeName);
         if (addrPort == null) return false;
@@ -451,7 +438,8 @@ public class Node implements NodeInterface {
         }
         return false;
     }
-    
+
+    // Maintain the relay stack used for forwarded messages
     public void pushRelay(String nodeName) throws Exception {
         relayStack.push(nodeName);
     }
@@ -460,6 +448,7 @@ public class Node implements NodeInterface {
         if (!relayStack.isEmpty()) relayStack.pop();
     }
 
+    // Checks whether a key exists by sending Key Existence (E) requests to the closest 3 nodes
     public boolean exists(String key) throws Exception {
         byte[] keyHash = HashID.computeHashID(key);
 
@@ -499,7 +488,8 @@ public class Node implements NodeInterface {
         }
         return false;
     }
-    
+
+    // Reads a value by sending Read (R) requests to closest 3 nodes
     public String read(String key) throws Exception {
         byte[] keyHash = HashID.computeHashID(key);
         List<String> sorted = new ArrayList<>(addressPairs.keySet());
@@ -542,15 +532,16 @@ public class Node implements NodeInterface {
         return null;
     }
 
+    // Writes a key/value pair by sending Write (W) requests to the closest 3 nodes
     public boolean write(String key, String value) throws Exception {
         handleIncomingMessages(500);
         byte[] keyHash = HashID.computeHashID(key);
         List<String> sorted = new ArrayList<>(addressPairs.keySet());
         sorted.sort((a, b) -> {
             try {
-                int da = calculateDistance(HashID.computeHashID(a), keyHash);
-                int db = calculateDistance(HashID.computeHashID(b), keyHash);
-                return Integer.compare(da, db);
+                int distanceA = calculateDistance(HashID.computeHashID(a), keyHash);
+                int distanceB = calculateDistance(HashID.computeHashID(b), keyHash);
+                return Integer.compare(distanceA, distanceB);
             } catch (Exception e) { return 0; }
         });
 
