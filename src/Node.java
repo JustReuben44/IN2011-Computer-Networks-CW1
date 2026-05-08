@@ -192,7 +192,6 @@ public class Node implements NodeInterface {
         Node n2 = new Node();
         n2.setNodeName("N:test1");
         n2.openPort(20111);
-        n2.dataPairs.put("D:hello", "world");
 
         n1.addressPairs.put("N:test1", "127.0.0.1:20111");
 
@@ -202,8 +201,9 @@ public class Node implements NodeInterface {
         t.setDaemon(true);
         t.start();
 
-        System.out.println("exists D:hello: " + n1.exists("D:hello"));
-        System.out.println("exists D:missing: " + n1.exists("D:missing"));
+        System.out.println("write: " + n1.write("D:hello", "world"));
+        System.out.println("read: " + n1.read("D:hello"));
+        System.out.println("read missing: " + n1.read("D:nope"));
     }
 
     public void handleIncomingMessages(int delay) throws Exception {
@@ -280,6 +280,60 @@ public class Node implements NodeInterface {
                     int rxTxID = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
                     responses.put(rxTxID, body);
                 }
+
+                else if (body.startsWith("R ")) {
+                    DecodeResult key = decodeString(body.substring(2), 0);
+                    String reply;
+                    if (dataPairs.containsKey(key.value)) {
+                        reply = "S Y " + encodeString(dataPairs.get(key.value));
+                    } else if (addressPairs.containsKey(key.value)) {
+                        reply = "S Y " + encodeString(addressPairs.get(key.value));
+                    } else {
+                        byte[] keyHash = HashID.computeHashID(key.value);
+                        reply = amIClosest(keyHash) ? "S N" : "S ?";
+                    }
+                    sendReply(packet, txId0, txId1, reply);
+                }
+
+                else if (body.startsWith("S")) {
+                    int rxTxID = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
+                    responses.put(rxTxID, body);
+                }
+
+                else if (body.startsWith("W ")) {
+                    System.out.println("write called, knownPeers=" + addressPairs.keySet());
+                    String afterW = body.substring(2);
+                    DecodeResult key = decodeString(body.substring(2), 0);
+                    DecodeResult val = decodeString(body, 2 + key.endPos);
+
+                    boolean isAddress = key.value.startsWith("N:");
+                    boolean haveIt = isAddress
+                            ? addressPairs.containsKey(key.value)
+                            : dataPairs.containsKey(key.value);
+
+                    String reply;
+                    if (haveIt) {
+                        if (isAddress) addressPairs.put(key.value, val.value);
+                        else dataPairs.put(key.value, val.value);
+                        reply = "R";
+                    } else {
+                        byte[] keyHash = HashID.computeHashID(key.value);
+                        if (amIClosest(keyHash)) {
+                            if (isAddress) addressPairs.put(key.value, val.value);
+                            else dataPairs.put(key.value, val.value);
+                            reply = "A";
+                        } else {
+                            reply = "X";
+                        }
+                    }
+                    System.out.println("W received: key=" + key.value + " val=" + val.value);
+                    sendReply(packet, txId0, txId1, reply);
+                }
+                else if (body.equals("R") || body.equals("A") || body.equals("X")) {
+                    int rxTxID = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
+                    responses.put(rxTxID, body);
+                }
+
 
             } catch (SocketTimeoutException e) {
                 return;
@@ -399,11 +453,11 @@ public class Node implements NodeInterface {
     }
     
     public void pushRelay(String nodeName) throws Exception {
-	throw new Exception("Not implemented");
+        relayStack.push(nodeName);
     }
 
     public void popRelay() throws Exception {
-        throw new Exception("Not implemented");
+        if (!relayStack.isEmpty()) relayStack.pop();
     }
 
     public boolean exists(String key) throws Exception {
@@ -447,11 +501,86 @@ public class Node implements NodeInterface {
     }
     
     public String read(String key) throws Exception {
-	throw new Exception("Not implemented");
+        byte[] keyHash = HashID.computeHashID(key);
+        List<String> sorted = new ArrayList<>(addressPairs.keySet());
+        sorted.sort((a, b) -> {
+            try {
+                int da = calculateDistance(HashID.computeHashID(a), keyHash);
+                int db = calculateDistance(HashID.computeHashID(b), keyHash);
+                return Integer.compare(da, db);
+            } catch (Exception e) { return 0; }
+        });
+
+        for (int i = 0; i < Math.min(3, sorted.size()); i++) {
+            String node = sorted.get(i);
+            String addrPort = addressPairs.get(node);
+            String[] parts = addrPort.split(":");
+
+            int txID = generateTransactionID();
+            byte[] txBytes = { (byte)(txID >> 8), (byte)(txID & 0xFF) };
+            String reqBody = "R " + encodeString(key);
+            byte[] bodyBytes = reqBody.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] full = new byte[3 + bodyBytes.length];
+            full[0] = txBytes[0]; full[1] = txBytes[1]; full[2] = ' ';
+            System.arraycopy(bodyBytes, 0, full, 3, bodyBytes.length);
+            socket.send(new DatagramPacket(full, full.length,
+                    java.net.InetAddress.getByName(parts[0]), Integer.parseInt(parts[1])));
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline) {
+                handleIncomingMessages(500);
+                if (responses.containsKey(txID)) {
+                    String reply = responses.remove(txID);
+                    if (reply.startsWith("S Y ")) {
+                        DecodeResult val = decodeString(reply.substring(4), 0);
+                        return val.value;
+                    }
+                    break;
+                }
+            }
+        }
+        return null;
     }
 
     public boolean write(String key, String value) throws Exception {
-	throw new Exception("Not implemented");
+        handleIncomingMessages(500);
+        byte[] keyHash = HashID.computeHashID(key);
+        List<String> sorted = new ArrayList<>(addressPairs.keySet());
+        sorted.sort((a, b) -> {
+            try {
+                int da = calculateDistance(HashID.computeHashID(a), keyHash);
+                int db = calculateDistance(HashID.computeHashID(b), keyHash);
+                return Integer.compare(da, db);
+            } catch (Exception e) { return 0; }
+        });
+
+        boolean success = false;
+        for (int i = 0; i < Math.min(3, sorted.size()); i++) {
+            String node = sorted.get(i);
+            String addrPort = addressPairs.get(node);
+            String[] parts = addrPort.split(":");
+
+            int txID = generateTransactionID();
+            byte[] txBytes = { (byte)(txID >> 8), (byte)(txID & 0xFF) };
+            String reqBody = "W " + encodeString(key) + encodeString(value);
+            byte[] bodyBytes = reqBody.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] full = new byte[3 + bodyBytes.length];
+            full[0] = txBytes[0]; full[1] = txBytes[1]; full[2] = ' ';
+            System.arraycopy(bodyBytes, 0, full, 3, bodyBytes.length);
+            socket.send(new DatagramPacket(full, full.length,
+                    java.net.InetAddress.getByName(parts[0]), Integer.parseInt(parts[1])));
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline) {
+                handleIncomingMessages(500);
+                if (responses.containsKey(txID)) {
+                    String reply = responses.remove(txID);
+                    if (reply.equals("R") || reply.equals("A")) success = true;
+                    break;
+                }
+            }
+        }
+        return success;
     }
 
     public boolean CAS(String key, String currentValue, String newValue) throws Exception {
