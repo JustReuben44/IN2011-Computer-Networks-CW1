@@ -16,6 +16,9 @@ import java.net.DatagramSocket;
 import java.net.DatagramPacket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Random;
 
 
 interface NodeInterface {
@@ -90,6 +93,9 @@ public class Node implements NodeInterface {
     private String nodeName;
     private byte[] nodeHashID;
     private DatagramSocket socket;
+    private Map<String, String> addressPairs = new HashMap<>();
+    private Map<Integer, String> responses = new HashMap<>();
+    private Random random = new Random();
 
     //Sets node's name ensuring it starts with "N:" and computes its hashID
     public void setNodeName(String nodeName) throws Exception {
@@ -111,7 +117,7 @@ public class Node implements NodeInterface {
         for (byte b: bytes) {
             hash.append(String.format("%02x", b & 0xFF));
         }
-        return sb.toString();
+        return hash.toString();
     }
 
     public static int calculateDistance(byte[] a, byte[] b){
@@ -166,11 +172,24 @@ public class Node implements NodeInterface {
     }
 
     public static void main(String[] args) throws Exception {
-        Node n = new Node();
-        n.setNodeName("N:test0");
-        n.openPort(20110);
-        System.out.println("Listening on 20110...");
-        n.handleIncomingMessages(0);
+        Node n1 = new Node();
+        n1.setNodeName("N:test0");
+        n1.openPort(20110);
+
+        Node n2 = new Node();
+        n2.setNodeName("N:test1");
+        n2.openPort(20111);
+
+
+        n1.addressPairs.put("N:test1", "127.0.0.1:20111");
+
+
+        Thread t = new Thread(() -> {
+            try { n2.handleIncomingMessages(0); } catch (Exception e) {}
+        });
+        t.setDaemon(true);
+        t.start();
+        System.out.println("isActive: " + n1.isActive("N:test1"));
     }
 
     public void handleIncomingMessages(int delay) throws Exception {
@@ -210,6 +229,13 @@ public class Node implements NodeInterface {
                             packet.getAddress(), packet.getPort());
                     socket.send(out);
                 }
+
+                else if (body.startsWith("H")) {
+                    int rxTxID = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
+                    responses.put(rxTxID, body);
+                }
+
+                
             } catch (SocketTimeoutException e) {
                 return;
             }
@@ -217,9 +243,47 @@ public class Node implements NodeInterface {
             if (delay > 0 && System.currentTimeMillis() - start >= delay) return;
         }
     }
+
+    private int generateTransactionID() {
+        int id;
+        do {
+            id = random.nextInt(65536);
+        } while ((id & 0xFF) == 0x20 || ((id >> 8) & 0xFF) == 0x20);
+        return id;
+    }
     
     public boolean isActive(String nodeName) throws Exception {
-	throw new Exception("Not implemented");
+        String addrPort = addressPairs.get(nodeName);
+        if (addrPort == null) return false;
+
+        String[] parts = addrPort.split(":");
+        String addr = parts[0];
+        int port = Integer.parseInt(parts[1]);
+
+        int txID = generateTransactionID();
+        byte[] txBytes = { (byte)(txID >> 8), (byte)(txID & 0xFF) };
+
+        byte[] full = { txBytes[0], txBytes[1], ' ', 'G' };
+
+        DatagramPacket out = new DatagramPacket(full, full.length,
+                java.net.InetAddress.getByName(addr), port);
+        socket.send(out);
+
+
+        long deadline = System.currentTimeMillis() + 15000;
+        while (System.currentTimeMillis() < deadline) {
+            handleIncomingMessages(500);
+            if (responses.containsKey(txID)) {
+                String reply = responses.remove(txID);
+
+                if (reply.startsWith("H ")) {
+                    DecodeResult r = decodeString(reply.substring(2), 0);
+                    return r.value.equals(nodeName);
+                }
+                return false;
+            }
+        }
+        return false;
     }
     
     public void pushRelay(String nodeName) throws Exception {
